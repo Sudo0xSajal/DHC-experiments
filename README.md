@@ -103,7 +103,8 @@ synapse_data/
 Example training command:
 
 ```bash
-bash train3times_seeds_20p.sh -c 0 -t synapse -m dhc -e exp_test -l 3e-2 -w 0.1
+#original
+bash train3times_seeds_20p.sh -c 0 -t amos -m dhc -e '' -l 3e-2 -w 0.1
 ```
 
 Key parameters:
