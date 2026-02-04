@@ -1,4 +1,4 @@
-# train_dhc.py - Complete Enhanced Version with All Improvements
+# train_dhc.py - Complete Enhanced Version
 import os
 import sys
 import logging
@@ -43,10 +43,6 @@ parser.add_argument('--warmup_epochs', type=int, default=50,
                    help='Warmup epochs before full noise training (default: 50)')
 parser.add_argument('--noise_safe_mode', action='store_true', default=True,
                    help='Use safe noise scaling (default: True)')
-parser.add_argument('--val_freq', type=int, default=20,
-                   help='Validation frequency during training (default: 20)')
-parser.add_argument('--noise_convergence_thresh', type=float, default=0.01,
-                   help='Noise std threshold for convergence (default: 0.01)')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
@@ -74,7 +70,7 @@ config = Config(args.task)
 # ============================================
 # NEW FUNCTIONS ADDED: Validation and Gradient Clipping
 # ============================================
-  
+
 # NEW FUNCTION ADDED: Tensor validation for early error detection
 # Reason: Noise training can produce NaN/Inf values that break training
 def validate_tensors(*tensors, name=""):
@@ -109,63 +105,6 @@ def clip_gradients(model, scaler, optimizer, max_norm=1.0):
     
     # Clip gradients
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-
-# ============================================
-# NEW FUNCTIONS ADDED: IMPROVEMENTS 2, 3, 5
-# ============================================
-
-def adaptive_loss_weight(epoch, initial_w, min_w=0.1, rampup_epochs=100):
-    """
-    Adaptively adjust loss weights based on training progress.
-    Improvement 5: Adaptive loss weighting
-    """
-    if epoch < rampup_epochs:
-        # Ramp up from min_w to initial_w
-        ratio = epoch / rampup_epochs
-        return min_w + (initial_w - min_w) * ratio
-    else:
-        # After rampup, gradually reduce weights
-        decay_ratio = min(1.0, (epoch - rampup_epochs) / 400)
-        return initial_w * (1.0 - decay_ratio * 0.5)
-
-def validate_on_subset(model_A, model_B, val_loader, config):
-    """
-    Validate on small labeled subset during training.
-    Improvement 2: Intermediate validation
-    """
-    model_A.eval()
-    model_B.eval()
-    
-    dice_list = [[] for _ in range(config.num_cls-1)]
-    dice_func = SoftDiceLoss(smooth=1e-8)
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            image, gt = fetch_data(batch)
-            output_A = model_A(image, return_dict=False)
-            output_B = model_B(image, return_dict=False)
-            output = (output_A + output_B) / 2.0
-            
-            # Dice calculation
-            shp = output.shape
-            gt = gt.long()
-            y_onehot = torch.zeros(shp).cuda()
-            y_onehot.scatter_(1, gt, 1)
-            
-            x_onehot = torch.zeros(shp).cuda()
-            output = torch.argmax(output, dim=1, keepdim=True).long()
-            x_onehot.scatter_(1, output, 1)
-            
-            dice = dice_func(x_onehot, y_onehot, is_training=False)
-            dice = dice.data.cpu().numpy()
-            for i, d in enumerate(dice):
-                dice_list[i].append(d)
-    
-    model_A.train()
-    model_B.train()
-    
-    dice_means = [np.mean(d) for d in dice_list]
-    return np.mean(dice_means), dice_means
 
 # ============================================
 # Existing Helper Functions (Unchanged)
@@ -345,7 +284,7 @@ class DiffDW:
         return weights * self.num_cls
 
 # ============================================
-# Main Training Script with ALL IMPROVEMENTS
+# Main Training Script
 # ============================================
 
 if __name__ == '__main__':
@@ -418,17 +357,7 @@ if __name__ == '__main__':
     alpha_mean, alpha_std = 0.0, 0.0
     agreement = 0.0
     
-    # NEW: Track noise convergence
-    noise_converged_epoch = None
-    stable_noise_epochs = 0
-    
     for epoch_num in range(args.max_epoch + 1):
-        # IMPROVEMENT 5: Adaptive loss weighting
-        if epoch_num > 0:
-            args.w_sup_noise = adaptive_loss_weight(epoch_num, args.w_sup_noise, min_w=0.05)
-            args.w_u_noise = adaptive_loss_weight(epoch_num, args.w_u_noise, min_w=0.05)
-            args.w_noise_cons = adaptive_loss_weight(epoch_num, args.w_noise_cons, min_w=0.02)
-        
         loss_list = []
         loss_cps_list = []
         loss_sup_list = []
@@ -632,21 +561,6 @@ if __name__ == '__main__':
                 # Monitor buffer stats
                 buffer_stats = noise_buffer.get_buffer_stats()
 
-        # IMPROVEMENT 3: Noise convergence check
-        noise_converged = (noise_std_A < args.noise_convergence_thresh and 
-                          noise_std_B < args.noise_convergence_thresh and 
-                          epoch_num > 100)
-        
-        if noise_converged and noise_converged_epoch is None:
-            noise_converged_epoch = epoch_num
-            logging.info(f"⚠️  Noise converged at epoch {epoch_num} (std_A={noise_std_A:.4f}, std_B={noise_std_B:.4f})")
-        
-        if noise_converged_epoch is not None:
-            stable_noise_epochs = epoch_num - noise_converged_epoch
-            if stable_noise_epochs >= 50:
-                logging.info(f"✅ Stable noise for {stable_noise_epochs} epochs, considering early stopping")
-                writer.add_scalar('training/noise_stable_epochs', stable_noise_epochs, epoch_num)
-        
         # Basic tensorboard logging (unchanged)
         writer.add_scalar('lr', get_lr(optimizer_A), epoch_num)
         writer.add_scalar('cps_w', cps_w, epoch_num)
@@ -668,10 +582,9 @@ if __name__ == '__main__':
         writer.add_scalar('pseudo/agreement', agreement, epoch_num)
         writer.add_scalar('buffer/filled_ratio', buffer_stats.get('filled_ratio', 0), epoch_num)
         
-        # IMPROVEMENT 5: Log adaptive weights
-        writer.add_scalar('weights/w_sup_noise', args.w_sup_noise, epoch_num)
-        writer.add_scalar('weights/w_u_noise', args.w_u_noise, epoch_num)
-        writer.add_scalar('weights/w_noise_cons', args.w_noise_cons, epoch_num)
+        # OLD LOGGING: Basic loss only
+        # logging.info(f'epoch {epoch_num} : loss : {np.mean(loss_list)}')
+        # logging.info(f'     noise_losses: sup{np.mean(loss_sup_noise_list):.4f}, dis{np.mean(loss_u_dis_list):.4f}, cons{np.mean(loss_cons_list):.4f}')
         
         # NEW LOGGING: Comprehensive training metrics
         logging.info(f'epoch {epoch_num} : loss : {np.mean(loss_list):.4f}')
@@ -681,10 +594,6 @@ if __name__ == '__main__':
                      f'pseudo_agree={agreement:.3f}')
         logging.info(f'  noise_losses: sup={np.mean(loss_sup_noise_list):.4f}, '
                      f'dis={np.mean(loss_u_dis_list):.4f}, cons={np.mean(loss_cons_list):.4f}')
-        
-        # Log adaptive weights
-        logging.info(f'  adaptive_weights: sup={args.w_sup_noise:.3f}, '
-                     f'dis={args.w_u_noise:.3f}, cons={args.w_noise_cons:.3f}')
         
         # Log adaptive alpha information
         if isinstance(alpha_A, torch.Tensor):
@@ -700,14 +609,6 @@ if __name__ == '__main__':
         optimizer_B.param_groups[0]['lr'] = poly_lr(epoch_num, args.max_epoch, args.base_lr, 0.9)
         
         cps_w = get_current_consistency_weight(epoch_num)
-
-        # IMPROVEMENT 2: Intermediate validation during training
-        if epoch_num % args.val_freq == 0 and epoch_num > args.warmup_epochs:
-            val_dice_mean, val_dice_per_class = validate_on_subset(model_A, model_B, eval_loader, config)
-            writer.add_scalar('val/dice_during_train', val_dice_mean, epoch_num)
-            writer.add_scalar('val/dice_during_train_per_class', np.mean(val_dice_per_class), epoch_num)
-            logging.info(f'📊 Intermediate validation: mean_dice={val_dice_mean:.4f}, '
-                        f'per_class={[f"{d:.3f}" for d in val_dice_per_class]}')
 
         if epoch_num % 10 == 0:
             # Evaluation
@@ -753,20 +654,9 @@ if __name__ == '__main__':
                 }, save_path)
                 logging.info(f'saving best model to {save_path}')
             logging.info(f'\t best eval dice is {best_eval} in epoch {best_epoch}')
-            
-            # IMPROVEMENT 3: Enhanced early stopping with noise convergence
             if epoch_num - best_epoch == config.early_stop_patience:
-                logging.info(f'Early stop due to no improvement for {config.early_stop_patience} epochs.')
-                if noise_converged_epoch is not None:
-                    logging.info(f'Noise was stable for {stable_noise_epochs} epochs.')
-                break
-            
-            # Additional early stop if noise converged and stable for long time
-            if noise_converged_epoch is not None and stable_noise_epochs >= 100:
-                logging.info(f'Early stop: noise stable for {stable_noise_epochs} epochs.')
+                logging.info(f'Early stop.')
                 break
             
     writer.close()
     logging.info(f'Training completed. Best dice: {best_eval} at epoch {best_epoch}')
-    if noise_converged_epoch is not None:
-        logging.info(f'Noise converged at epoch {noise_converged_epoch} and was stable for {stable_noise_epochs} epochs.')
