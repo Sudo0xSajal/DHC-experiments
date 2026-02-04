@@ -1,136 +1,139 @@
+## 🚀 DHC-experiments
 
+<p align="center">
+  <img src="./images/framework.png" width="800" />
+</p>
 
+<p align="center">
+  <b>Experimental & Research-Oriented Fork of MICCAI 2023 DHC</b><br/>
+  Dual-debiased Heterogeneous Co-training for Class-imbalanced Semi-supervised Medical Image Segmentation
+</p>
 
+---
 
-## [MICCAI2023] DHC
+### 📌 Overview
 
-This repo is the official implementation of [DHC: Dual-debiased Heterogeneous Co-training Framework for Class-imbalanced Semi-supervised Medical Image Segmentation](https://link.springer.com/chapter/10.1007/978-3-031-43898-1_56) which is accepted at MICCAI-2023.
+This repository is a **personal experimental fork** of the MICCAI 2023 paper:
 
-![framework.png](./images/framework.png)
+> **DHC: Dual-debiased Heterogeneous Co-training Framework for Class-imbalanced Semi-supervised Medical Image Segmentation**
+> *Haonan Wang, Xiaomeng Li — MICCAI 2023*
 
-🚀🚀🚀 We highly recommend you try our new work: https://github.com/xmed-lab/GenericSSL, which considers more practical scenarios of semi-supervised segmentation and the paper is accepted at _**NeurIPS-2023**_!
+⚠️ **Note**: This is **NOT** the official implementation.
+This repository is maintained for **research, experimentation, debugging, and controlled modifications** of the original DHC framework.
 
+---
 
+### 🔬 Motivation & Scope
 
+This fork exists to explore:
 
-### 1. Environment
+* 🧪 **Loss function experimentation** (Dice, CE, class-balanced, noise-robust losses)
+* 🔧 **Noise handling & robustness analysis**
+* 📊 **Ablation studies** and metric behavior (Dice, ASD, HD)
+* 🧠 Architectural tweaks without altering the upstream codebase
 
-This code has been tested with Python 3.6, PyTorch 1.8, torchvision 0.9.0, and CUDA 11.1 on Ubuntu 20.04.
+Results in this repository may **deviate from the published paper** and should not be treated as official benchmarks.
 
-Before running the code, set the `PYTHONPATH` to `pwd`:
-```shell
+---
+
+### 🏛️ Original Work
+
+* **Conference**: MICCAI 2023
+* **Paper**: DHC: Dual-debiased Heterogeneous Co-training Framework for Class-imbalanced Semi-supervised Medical Image Segmentation
+* **Authors**: Haonan Wang, Xiaomeng Li
+
+If you are looking for the **official and stable implementation**, please refer to the original authors’ repository.
+
+---
+
+### ⚙️ Environment Setup
+
+This fork follows the original experimental setup unless otherwise stated.
+
+Tested configuration:
+
+* Python ≥ 3.6
+* PyTorch 1.8
+* torchvision 0.9.0
+* CUDA 11.x
+* Ubuntu 20.04 / Windows (Git Bash)
+
+Set the `PYTHONPATH` before running:
+
+```bash
 export PYTHONPATH=$(pwd)/code:$PYTHONPATH
 ```
 
-### 2. Data Preparation
+---
 
-#### 2.1 Synapse
-The MR imaging scans are available at https://www.synapse.org/#!Synapse:syn3193805/wiki/.
-Please sign up and download the dataset. 
+### 📂 Data Preparation
 
-Put the data in anywhere you want then change the file paths in `config.py`.
+Data preprocessing strictly follows the **official DHC protocol**.
 
-Run `./code/data/preprocess.py` to 
-- convert `.nii.gz` files into `.npy` for faster loading. 
-- generate the train/validation/test splits
-- generate the labeled/unlabeled splits 
+#### 🧠 Synapse Dataset
 
-🔥🔥🔥 The **preprocessed Synapse dataset** is available for downloading via [this link](https://hkustconnect-my.sharepoint.com/:f:/g/personal/hwanggr_connect_ust_hk/EmOL8Cn-GTBJtOjg6zNgsPABdF6TgoWtRac4FwGqfFxLvQ?e=a1xaDJ).
+* Dataset: [https://www.synapse.org/#!Synapse:syn3193805/wiki/](https://www.synapse.org/#!Synapse:syn3193805/wiki/)
+* Preprocessing:
 
-After preprocessing, the `./synapse_data/` folder should be organized as follows:
-
-```shell
-./synapse_data/
-├── npy
-│   ├── <id>_image.npy
-│   ├── <id>_label.npy
-├── splits
-│   ├── labeled_20p.txt
-│   ├── unlabeled_20p.txt
-│   ├── train.txt
-│   ├── eval.txt
-│   ├── test.txt
-│   ├── ...
+```bash
+python ./code/data/preprocess.py
 ```
 
-#### 2.2 AMOS
-The dataset can be downloaded from https://amos22.grand-challenge.org/Dataset/
+#### 🧠 AMOS Dataset
 
-Run `./code/data/preprocess_amos.py` to pre-process.
+* Dataset: [https://amos22.grand-challenge.org/Dataset/](https://amos22.grand-challenge.org/Dataset/)
+* Preprocessing:
 
-🔥🔥🔥 The **preprocessed AMOS22 dataset** is available for downloading via [this link](https://hkustconnect-my.sharepoint.com/:f:/g/personal/hwanggr_connect_ust_hk/En8eq9ClytlAi8ZJaJBLswoB5tfJElLm1yd86gF2WIZVGw?e=7LhcfH).
-
-### 3. Training & Testing & Evaluating
-
-Run the following commands for training, testing and evaluating.
-
-```shell
-bash train3times_seeds_20p.sh -c 0 -t synapse -m dhc -e '' -l 3e-2 -w 0.1
+```bash
+python ./code/data/preprocess_amos.py
 ```
-`20p` denotes training with 20% labeled data, you can change this to `2p`, `5p`, ... for 2%, 5%, ... labeled data.
 
-Parameters:
+Expected directory structure:
 
-`-c`: use which gpu to train
-
-`-t`: task, can be `synapse` or `amos`
-
-`-m`: method, `dhc` is our proposed method, other available methods including:
-- cps
-- uamt
-- urpc
-- ssnet
-- dst
-- depl
-- adsh
-- crest
-- simis
-- acisis
-- cld
-
-`-e`: name of current experiment
-
-`-l`: learning rate
-
-`-w`: weight of unsupervised loss
-
-**Weights of all the above models trained on 20% labeled Synapse can be downloaded from** [here](https://drive.google.com/drive/folders/1aUU2KvNUVAYLo4qqvT5JBd7hHzo_4K1Q?usp=drive_link).
-
-**Weights of all the above models trained on 5% labeled AMOS can be downloaded from** [here](https://drive.google.com/drive/folders/1mLrM9AswKBiRLu5t63HAtI2ivg17Lt2m?usp=drive_link).
-
-
-### 4. Results
-
-#### 4.1 Synapse
-
-13 classes: Sp: spleen, RK: right kidney, LK: left kidney, Ga: gallbladder, Es: esophagus, Li: liver, St: stomach, Ao: aorta, IVC: inferior vena cava, PSV: portal & splenic veins, Pa: pancreas, RAG: right adrenal gland, LAG: left adrenal gland.
-
-_4.1.1 Trained with 10% labeled data_
-![synapse-10.png](./images/synapse-10.png)
-
-_4.1.2 Trained with 20% labeled data_
-![synapse-20.png](./images/synapse-20.png)
-
-_4.1.3 Trained with 40% labeled data_
-![synapse-40.png](./images/synapse-40.png)
-
-#### 4.2 AMOS
-
-15 classes: spleen, right kidney, left kidney, gallbladder, esophagus, liver, stomach, aorta, inferior vena cava, pancreas, right adrenal gland, left adrenal gland, duodenum, bladder, prostate/uterus
-
-_4.2.1 Trained with 2% labeled data_
-![amos-2.png](./images/amos-2.png)
-
-_4.2.2 Trained with 5% labeled data_
-![amos-5.png](./images/amos-5.png)
-
-_4.2.3 Trained with 10% labeled data_
-![amos-10.png](./images/amos-10.png)
-
-
-## Cite
-If this code is helpful for your study, please cite:
+```text
+synapse_data/
+├── npy/
+├── splits/
 ```
+
+---
+
+### 🚀 Training & Experiments
+
+Example training command:
+
+```bash
+bash train3times_seeds_20p.sh -c 0 -t synapse -m dhc -e exp_test -l 3e-2 -w 0.1
+```
+
+Key parameters:
+
+* `-c` : GPU index
+* `-t` : task (`synapse`, `amos`)
+* `-m` : method (`dhc`, `cps`, `uamt`, etc.)
+* `-e` : experiment identifier
+* `-l` : learning rate
+* `-w` : unsupervised loss weight
+
+---
+
+### 📊 Experimental Results
+
+All reported results in this repository are:
+
+* ⚠️ **Experimental**
+* 🔄 Subject to change
+* 🧪 Influenced by loss modifications and noise strategies
+
+Do **NOT** use these results as a replacement for the official benchmarks.
+
+---
+
+### 📚 Citation
+
+If this work helps your research, please cite the original paper:
+
+```bibtex
 @inproceedings{wang2023dhc,
   title={DHC: Dual-debiased Heterogeneous Co-training Framework for Class-imbalanced Semi-supervised Medical Image Segmentation},
   author={Wang, Haonan and Li, Xiaomeng},
@@ -141,7 +144,15 @@ If this code is helpful for your study, please cite:
 }
 ```
 
-## License
+---
 
-This repository is released under MIT License.
+### 📜 License
 
+This repository follows the **MIT License** of the original DHC implementation.
+
+---
+
+### 🧪 Disclaimer
+
+This repository is intended **solely for learning and research experimentation**.
+For official results, production usage, or reproducibility claims, always refer to the original authors’ codebase.
