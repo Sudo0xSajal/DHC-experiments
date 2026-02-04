@@ -654,9 +654,9 @@ if __name__ == '__main__':
                 }, save_path)
                 logging.info(f'saving best model to {save_path}')
             logging.info(f'\t best eval dice is {best_eval} in epoch {best_epoch}')
-            if epoch_num - best_epoch == config.early_stop_patience:
-                logging.info(f'Early stop.')
-                break
+            # if epoch_num - best_epoch == config.early_stop_patience:
+            #     logging.info(f'Early stop.')
+            #     break
             
     writer.close()
     logging.info(f'Training completed. Best dice: {best_eval} at epoch {best_epoch}')
