@@ -13,7 +13,7 @@ while getopts 'm:e:c:t:l:w:' OPT; do
 done
 echo $method
 echo $cuda
-
+  
 epoch=500
 echo $epoch
 

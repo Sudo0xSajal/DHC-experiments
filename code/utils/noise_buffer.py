@@ -8,26 +8,14 @@ class NoiseHistoryBuffer:
     
     def update(self, n_A, n_B):
         """Add new noise predictions to buffer"""
-        # Detach and clone to avoid memory issues
-        # self.buffer_A.append(n_A.detach().clone()) #stores full tensors
-        # self.buffer_B.append(n_B.detach().clone())
-        # Store statistics instead of full tensors #changes 1
-        self.buffer_A_mean.append(n_A.mean().item())
-        self.buffer_A_std.append(n_A.std().item())
-        self.buffer_B_mean.append(n_B.mean().item())
-        self.buffer_B_std.append(n_B.std().item())
+        # Detach and clone to avoid memory issues 
+        self.buffer_A.append(n_A.detach().clone())
+        self.buffer_B.append(n_B.detach().clone())
         
         # Remove oldest if buffer exceeds K
-        # if len(self.buffer_A) > self.K:
-        #     self.buffer_A.pop(0)
-        #     self.buffer_B.pop(0)
-
-        # Keep running buffers within K #changes 2
-        if len(self.buffer_A_mean) > self.K:
-           self.buffer_A_mean.pop(0)
-           self.buffer_A_std.pop(0)
-           self.buffer_B_mean.pop(0)
-           self.buffer_B_std.pop(0)
+        if len(self.buffer_A) > self.K:
+            self.buffer_A.pop(0)
+            self.buffer_B.pop(0)
     
     def get_stability(self):
         """Calculate stability from variance"""

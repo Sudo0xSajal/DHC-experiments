@@ -64,9 +64,7 @@ class NoiseLosses(nn.Module):
             L_sup = w_l * L_sup
 
         if (pA_u is not None) and (pB_u is not None) and (nA_u is not None) and (nB_u is not None):
-            # disagree = (pA_u - pB_u).abs()
-            # Change to:
-            disagree = (pA_u - pB_u).abs() + 1e-8  # Prevent zero disagreement #changes 1
+            disagree = (pA_u - pB_u).abs()  
             L_dis = self.mse(nA_u, disagree) + self.mse(nB_u, disagree)
             L_dis = w_u * L_dis
             L_cons = self.mse(nA_u, nB_u) * w_cons
