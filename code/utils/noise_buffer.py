@@ -8,9 +8,9 @@ class NoiseHistoryBuffer:
     
     def update(self, n_A, n_B):
         """Add new noise predictions to buffer"""
-        # Detach and clone to avoid memory issues
-        self.buffer_A.append(n_A.detach().clone())
-        self.buffer_B.append(n_B.detach().clone())
+        # Detach and clone to avoid memory issues 
+        self.buffer_A.append(n_A.detach().cpu().clone())
+        self.buffer_B.append(n_B.detach().cpu().clone())
         
         # Remove oldest if buffer exceeds K
         if len(self.buffer_A) > self.K:
