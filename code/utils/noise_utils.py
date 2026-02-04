@@ -95,3 +95,32 @@ def batch_cross_correction(batch_data, noise_buffer=None, alpha=0.7):
     result['pseudo_B'] = refined_pseudo_from(result['B_corrected'])
     
     return result
+#new function #changes 1
+def analyze_noise_correction(A_logits, B_logits, A_noise, B_noise, alpha_A, alpha_B):
+    """
+    Analyze noise correction effectiveness
+    """
+    with torch.no_grad():
+        # Before correction
+        pseudo_before_A = refined_pseudo_from(A_logits)
+        pseudo_before_B = refined_pseudo_from(B_logits)
+        agreement_before = (pseudo_before_A == pseudo_before_B).float().mean().item()
+        
+        # After correction
+        A_corrected = cross_correct_logits(A_logits, B_noise, alpha=alpha_B)
+        B_corrected = cross_correct_logits(B_logits, A_noise, alpha=alpha_A)
+        pseudo_after_A = refined_pseudo_from(A_corrected)
+        pseudo_after_B = refined_pseudo_from(B_corrected)
+        agreement_after = (pseudo_after_A == pseudo_after_B).float().mean().item()
+        
+        # Correction magnitude
+        correction_mag_A = (A_corrected - A_logits).abs().mean().item()
+        correction_mag_B = (B_corrected - B_logits).abs().mean().item()
+    
+    return {
+        'agreement_before': agreement_before,
+        'agreement_after': agreement_after,
+        'agreement_improvement': agreement_after - agreement_before,
+        'correction_mag_A': correction_mag_A,
+        'correction_mag_B': correction_mag_B
+    }
