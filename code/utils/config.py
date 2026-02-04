@@ -10,8 +10,8 @@ class Config:
             self.n_filters = 32
             self.early_stop_patience = 100
         else: # amos
-            self.base_dir = './Datasets/amos22'
-            self.save_dir = './amos_data'
+            self.base_dir = '/workspace/amos22'
+            self.save_dir = '/workspace/Amos_Data'
             self.patch_size = (64, 128, 128)
             self.num_cls = 16
             self.num_channels = 1
