@@ -83,7 +83,16 @@ class SoftDiceLoss(nn.Module):
         """
         super(SoftDiceLoss, self).__init__()
         if weight is not None:
-            weight = torch.FloatTensor(weight).cuda()
+            if torch.is_tensor(weight):
+                # Weight is already a tensor
+                weight = weight.float()
+                if weight.device.type != 'cuda':
+                    # Move to GPU if not already there
+                    weight = weight.cuda()
+            else:
+                # Weight is numpy array or list
+                # Create on CPU first, then move to GPU
+                weight = torch.FloatTensor(weight).cuda()
 
         self.do_bg = do_bg
         self.batch_dice = batch_dice
@@ -133,7 +142,16 @@ class RobustCrossEntropyLoss(nn.CrossEntropyLoss):
     """
     def __init__(self, weight=None):
         if weight is not None:
-            weight = torch.FloatTensor(weight).cuda()
+            if torch.is_tensor(weight):
+                # Weight is already a tensor
+                weight = weight.float()
+                if weight.device.type != 'cuda':
+                    # Move to GPU if not already there
+                    weight = weight.cuda()
+            else:
+                # Weight is numpy array or list
+                # Create on CPU first, then move to GPU
+                weight = torch.FloatTensor(weight).cuda()
         super().__init__(weight=weight)
     
     def forward(self, input, target):
