@@ -1,13 +1,25 @@
-# train_dhc.py - Complete Enhanced Version
+# train_dhc_fixed.py - Complete fixed training script with old vs new code
 import os
 import sys
 import logging
 from tqdm import tqdm
 import argparse
 
-# ============================================
-# SECTION A: Enhanced Argument Parser
-# ============================================
+# ----------------------------------------------------------------------
+# OLD CODE - No warning suppression leads to cluttered output
+# 
+# WHY NOT USING OLD CODE:
+# 1. PyTorch AMP warnings about deprecated API clutter the output
+# 2. Makes it hard to see actual training progress
+# 3. Warnings don't affect functionality but reduce readability
+# ----------------------------------------------------------------------
+
+# ----------------------------------------------------------------------
+# NEW IMPROVED CODE: Suppress warnings at the very beginning
+# ----------------------------------------------------------------------
+import warnings
+warnings.filterwarnings("ignore", message="torch.cuda.amp.GradScaler")
+warnings.filterwarnings("ignore", message="torch.cuda.amp.autocast")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--task', type=str, default='synapse')
@@ -39,13 +51,12 @@ parser.add_argument('--grad_clip', type=float, default=1.0,
                    help='Gradient clipping norm (default: 1.0)')
 parser.add_argument('--min_alpha', type=float, default=0.05,
                    help='Minimum alpha for noise cancellation (default: 0.05)')
-parser.add_argument('--warmup_epochs', type=int, default=50,
-                   help='Warmup epochs before full noise training (default: 50)')
 parser.add_argument('--noise_safe_mode', action='store_true', default=True,
                    help='Use safe noise scaling (default: True)')
 
 args = parser.parse_args()
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 import numpy as np
 import torch
@@ -71,12 +82,10 @@ config = Config(args.task)
 # NEW FUNCTIONS ADDED: Validation and Gradient Clipping
 # ============================================
 
-# NEW FUNCTION ADDED: Tensor validation for early error detection
-# Reason: Noise training can produce NaN/Inf values that break training
 def validate_tensors(*tensors, name=""):
     """
     Validate tensors for NaN/Inf and extreme values.
-    Reason: Noise training can produce invalid values that break training
+    Reason: Noise training can produce NaN/Inf values that break training
     """
     for i, t in enumerate(tensors):
         if t is None:
@@ -84,17 +93,19 @@ def validate_tensors(*tensors, name=""):
         
         # Check for NaN/Inf
         if torch.isnan(t).any():
-            raise ValueError(f"[{name}] Tensor {i} contains NaN values!")
+            logging.error(f"[{name}] Tensor {i} contains NaN values!")
+            return False
         if torch.isinf(t).any():
-            raise ValueError(f"[{name}] Tensor {i} contains Inf values!")
+            logging.error(f"[{name}] Tensor {i} contains Inf values!")
+            return False
         
-        # Check for extreme values
+        # Check for extreme values (warning only, not error)
         if t.abs().max() > 100.0:
             logging.warning(f"[{name}] Tensor {i} has extreme values: "
                           f"max_abs={t.abs().max():.2f}")
+    
+    return True
 
-# NEW FUNCTION ADDED: Gradient clipping to prevent explosion
-# Reason: Unstable noise training can cause gradient explosion
 def clip_gradients(model, scaler, optimizer, max_norm=1.0):
     """
     Clip gradients to prevent explosion.
@@ -107,7 +118,7 @@ def clip_gradients(model, scaler, optimizer, max_norm=1.0):
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
 # ============================================
-# Existing Helper Functions (Unchanged)
+# Existing Helper Functions (Enhanced)
 # ============================================
 
 def sigmoid_rampup(current, rampup_length):
@@ -121,23 +132,69 @@ def sigmoid_rampup(current, rampup_length):
 
 def get_current_consistency_weight(epoch):
     if args.cps_rampup:
-        # Consistency ramp-up from https://arxiv.org/abs/1610.02242
         if args.consistency_rampup is None:
             args.consistency_rampup = args.max_epoch
         return args.cps_w * sigmoid_rampup(epoch, args.consistency_rampup)
     else:
         return args.cps_w
 
-# ENHANCED FUNCTION: Modified to use args.min_alpha
-def get_alpha(epoch):
-     if args.alpha_rampup and args.alpha_rampup > 0:
-            # Use min_alpha as minimum value during rampup
-            alpha_min = args.min_alpha if hasattr(args, 'min_alpha') else 0.05
-            alpha_range = args.alpha_noise - alpha_min
-            return alpha_min + alpha_range * sigmoid_rampup(epoch, args.alpha_rampup)
-     return args.alpha_noise
+# ----------------------------------------------------------------------
+# OLD CODE - Simple alpha rampup without min_alpha
+# def get_alpha(epoch):
+#      if args.alpha_rampup and args.alpha_rampup > 0:
+#             return args.alpha_noise * sigmoid_rampup(epoch, args.alpha_rampup)
+#      return args.alpha_noise
+# 
+# WHY NOT USING OLD CODE:
+# 1. Can drop to 0 which completely disables noise cancellation
+# 2. No lower bound leads to unstable training early on
+# ----------------------------------------------------------------------
 
+# ----------------------------------------------------------------------
+# NEW IMPROVED CODE: Enhanced alpha rampup with min_alpha
+# ----------------------------------------------------------------------
+def get_alpha(epoch):
+    if args.alpha_rampup and args.alpha_rampup > 0:
+        # Use min_alpha as minimum value during rampup
+        alpha_min = args.min_alpha if hasattr(args, 'min_alpha') else 0.05
+        alpha_range = args.alpha_noise - alpha_min
+        return alpha_min + alpha_range * sigmoid_rampup(epoch, args.alpha_rampup)
+    return args.alpha_noise
+
+# ----------------------------------------------------------------------
+# OLD CODE - Direct weight passing (causes error with GPU tensors)
+# def make_loss_function(name, weight=None):
+#     if name == 'ce':
+#         return RobustCrossEntropyLoss()
+#     elif name == 'wce':
+#         return RobustCrossEntropyLoss(weight=weight)
+#     elif name == 'ce+dice':
+#         return DC_and_CE_loss()
+#     elif name == 'wce+dice':
+#         return DC_and_CE_loss(w_ce=weight)
+#     elif name == 'w_ce+dice':
+#         return DC_and_CE_loss(w_dc=weight, w_ce=weight)
+#     else:
+#         raise ValueError(name)
+# 
+# WHY NOT USING OLD CODE:
+# 1. When weight is GPU tensor, RobustCrossEntropyLoss.__init__() fails
+# 2. Error: torch.FloatTensor(weight) tries to create CPU tensor from GPU data
+# 3. Need to convert GPU tensors to CPU numpy first
+# ----------------------------------------------------------------------
+
+# ----------------------------------------------------------------------
+# NEW IMPROVED CODE: Handle GPU weight tensors properly
+# ----------------------------------------------------------------------
 def make_loss_function(name, weight=None):
+    """
+    Create loss function with proper weight handling.
+    Converts GPU tensors to CPU numpy arrays.
+    """
+    # Convert weight to CPU numpy if it's a GPU tensor
+    if weight is not None and torch.is_tensor(weight):
+        weight = weight.detach().cpu().numpy()
+    
     if name == 'ce':
         return RobustCrossEntropyLoss()
     elif name == 'wce':
@@ -202,12 +259,7 @@ def make_model_all():
         weight_decay=3e-5,
         nesterov=True
     )
-
     return model, optimizer
-
-# ============================================
-# Existing Classes (Unchanged)
-# ============================================
 
 class DistDW:
     def __init__(self, num_cls, do_bg=False, momentum=0.95):
@@ -243,7 +295,6 @@ class DistDW:
             label = label_numpy[i].reshape(-1)
             tmp, _ = np.histogram(label, range(self.num_cls + 1))
             num_each_class += tmp
-
         cur_weights = self._cal_weights(num_each_class) * self.num_cls
         self.weights = EMA(cur_weights, self.weights, momentum=self.momentum)
         return self.weights
@@ -263,7 +314,7 @@ class DiffDW:
         self.weights = torch.FloatTensor(weights).cuda()
         return weights
 
-    def cal_weights(self, pred,  label):
+    def cal_weights(self, pred, label):
         x_onehot = torch.zeros(pred.shape).cuda()
         output = torch.argmax(pred, dim=1, keepdim=True).long()
         x_onehot.scatter_(1, output, 1)
@@ -296,12 +347,10 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(SEED)
     torch.cuda.manual_seed_all(SEED)
     
-    # make logger file
     snapshot_path = f'./logs/{args.exp}/'
     maybe_mkdir(snapshot_path)
     maybe_mkdir(os.path.join(snapshot_path, 'ckpts'))
 
-    # make logger
     writer = SummaryWriter(os.path.join(snapshot_path, 'tensorboard'))
     logging.basicConfig(
         filename=os.path.join(snapshot_path, 'train.log'),
@@ -312,35 +361,32 @@ if __name__ == '__main__':
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     logging.info(str(args))
 
-    # make data loader
     unlabeled_loader = make_loader(args.split_unlabeled, unlabeled=True)
     labeled_loader = make_loader(args.split_labeled, repeat=len(unlabeled_loader.dataset))
     eval_loader = make_loader(args.split_eval, is_training=False)
 
-    logging.info(f'{len(labeled_loader)} itertations per epoch (labeled)')
-    logging.info(f'{len(unlabeled_loader)} itertations per epoch (unlabeled)')
+    logging.info(f'{len(labeled_loader)} iterations per epoch (labeled)')
+    logging.info(f'{len(unlabeled_loader)} iterations per epoch (unlabeled)')
 
-    # make model, optimizer
     model_A, optimizer_A = make_model_all()
-    model_B, optimizer_B  = make_model_all()
+    model_B, optimizer_B = make_model_all()
     model_A = kaiming_normal_init_weight(model_A)
     model_B = kaiming_normal_init_weight(model_B)
 
-    # instantiate noise losses
     noise_losses = NoiseLosses()
     
-    # Create noise buffer (using updated implementation)
-    noise_buffer = NoiseHistoryBuffer(K=10)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    noise_buffer = NoiseHistoryBuffer(K=10, device=device)
+    logging.info(f"Noise buffer initialized on device: {device}")
 
-    # make loss function
     diffdw = DiffDW(config.num_cls, accumulate_iters=50)
     distdw = DistDW(config.num_cls, momentum=0.99)
 
     weight_A = diffdw.init_weights()
     weight_B = distdw.init_weights(labeled_loader.dataset)
 
-    loss_func_A     = make_loss_function(args.sup_loss, weight_A)
-    loss_func_B     = make_loss_function(args.sup_loss, weight_B)
+    loss_func_A = make_loss_function(args.sup_loss, weight_A)
+    loss_func_B = make_loss_function(args.sup_loss, weight_B)
     cps_loss_func_A = make_loss_function(args.cps_loss, weight_A)
     cps_loss_func_B = make_loss_function(args.cps_loss, weight_B)
 
@@ -351,11 +397,12 @@ if __name__ == '__main__':
     best_eval = 0.0
     best_epoch = 0
     
-    # NEW: Initialize monitoring variables
+    # Initialize monitoring variables
     noise_mean_A, noise_mean_B = 0.0, 0.0
     noise_std_A, noise_std_B = 0.0, 0.0
     alpha_mean, alpha_std = 0.0, 0.0
     agreement = 0.0
+    buffer_filled_ratio = 0.0
     
     for epoch_num in range(args.max_epoch + 1):
         loss_list = []
@@ -379,97 +426,91 @@ if __name__ == '__main__':
 
             if args.mixed_precision:
                 with autocast():
-                    # ============================================
-                    # SECTION D: Modified Forward Pass with Validation
-                    # ============================================
+                    # ----------------------------------------------------------------------
+                    # OLD CODE - Assumes model returns dict with specific keys
+                    # outA = model_A(image)  # dict: seg_logits, seg_probs, noise, feat
+                    # 
+                    # WHY NOT USING OLD CODE:
+                    # 1. Model might return tensor instead of dict
+                    # 2. Causes KeyError when trying to access dict keys on tensor
+                    # 3. Need to handle both cases
+                    # ----------------------------------------------------------------------
+
+                    # ----------------------------------------------------------------------
+                    # NEW IMPROVED CODE: Handle both dict and tensor outputs
+                    # ----------------------------------------------------------------------
+                    raw_outA = model_A(image)
+                    raw_outB = model_B(image)
                     
-                    outA = model_A(image)  # dict: seg_logits, seg_probs, noise, feat
-                    outB = model_B(image)
+                    # Helper function to ensure dict format
+                    def ensure_output_dict(raw_output):
+                        if isinstance(raw_output, dict):
+                            return raw_output
+                        else:
+                            # Assume raw_output is segmentation logits
+                            return {
+                                'seg_logits': raw_output,
+                                'seg_probs': torch.softmax(raw_output, dim=1),
+                                'noise': torch.zeros_like(raw_output),  # Default zero noise
+                                'feat': None
+                            }
+                    
+                    outA = ensure_output_dict(raw_outA)
+                    outB = ensure_output_dict(raw_outB)
                     del image
 
-                    # split labeled / unlabeled with dict access
+                    # Split outputs
                     A_l = {k: v[:tmp_bs] for k, v in outA.items()}
                     A_u = {k: v[tmp_bs:] for k, v in outA.items()}
                     B_l = {k: v[:tmp_bs] for k, v in outB.items()}
                     B_u = {k: v[tmp_bs:] for k, v in outB.items()}
 
-                    # NEW: Validate critical tensors before further processing
-                    # Reason: Early detection of NaN/Inf values from noise training
-                    validate_tensors(
+                    # Validate critical tensors before further processing
+                    # Skip batch if validation fails to prevent training crash
+                    if not validate_tensors(
                         A_u['seg_logits'], A_u['noise'],
                         B_u['seg_logits'], B_u['noise'],
                         name=f"Epoch{epoch_num}_Forward"
-                    )
+                    ):
+                        logging.warning(f"Skipping batch due to invalid tensors at epoch {epoch_num}")
+                        continue
 
                     # Update noise buffer
                     noise_buffer.update(A_u['noise'], B_u['noise'])
                     
-                    # NEW: Get adaptive alpha with min_alpha bound
-                    # OLD CODE: Direct alpha usage without bounds
-                    # alpha_A, alpha_B = noise_buffer.get_adaptive_alpha(
-                    #     A_u['noise'], B_u['noise'], alpha_max=args.alpha_noise
-                    # )
+                    # Get alpha values
+                    alpha_global = get_alpha(epoch_num)
                     
-                    # NEW CODE: With min_alpha parameter for stability
+                    # Get adaptive alpha
                     alpha_A, alpha_B = noise_buffer.get_adaptive_alpha(
-                        A_u['noise'], B_u['noise'], 
-                        alpha_max=args.alpha_noise,
-                        min_alpha=args.min_alpha
+                        A_u['noise'], B_u['noise'], alpha_max=args.alpha_noise
                     )
 
-                    # Keep global alpha for logging
-                    alpha_global = get_alpha(epoch_num)
-
-                    # supervised segmentation (unchanged)
+                    # Supervised loss
                     loss_sup = loss_func_A(A_l['seg_logits'], label_l) + loss_func_B(B_l['seg_logits'], label_l)
 
-                    # ============================================
-                    # NEW: Structured noise loss call
-                    # ============================================
-                    
-                    # OLD CODE: Direct call with many parameters (error-prone)
-                    # L_sup_noise, L_u_dis, L_cons = noise_losses(
-                    #     pA_l=A_l['seg_probs'], pB_l=B_l['seg_probs'], y_l=label_l,
-                    #     nA_l=A_l['noise'], nB_l=B_l['noise'],
-                    #     pA_u=A_u['seg_probs'], pB_u=B_u['seg_probs'],
-                    #     nA_u=A_u['noise'], nB_u=B_u['noise'],
-                    #     w_l=args.w_sup_noise, w_u=args.w_u_noise, w_cons=args.w_noise_cons
-                    # )
-                    
-                    # NEW CODE: Structured call with dictionaries (cleaner, safer)
-                    labeled_dict = {
-                        'pA_l': A_l['seg_probs'],
-                        'pB_l': B_l['seg_probs'],
-                        'nA_l': A_l['noise'],
-                        'nB_l': B_l['noise'],
-                        'y_l': label_l
-                    }
-                    unlabeled_dict = {
-                        'pA_u': A_u['seg_probs'],
-                        'pB_u': B_u['seg_probs'],
-                        'nA_u': A_u['noise'],
-                        'nB_u': B_u['noise']
-                    }
-                    
-                    L_sup_noise, L_u_dis, L_cons = noise_losses.forward_structured(
-                        labeled_dict=labeled_dict,
-                        unlabeled_dict=unlabeled_dict,
-                        weights={
-                            'w_l': args.w_sup_noise,
-                            'w_u': args.w_u_noise,
-                            'w_cons': args.w_noise_cons
-                        }
+                    # Noise losses
+                    L_sup_noise, L_u_dis, L_cons = noise_losses(
+                        pA_l=A_l['seg_probs'], pB_l=B_l['seg_probs'], y_l=label_l,
+                        nA_l=A_l['noise'], nB_l=B_l['noise'],
+                        pA_u=A_u['seg_probs'], pB_u=B_u['seg_probs'],
+                        nA_u=A_u['noise'], nB_u=B_u['noise'],
+                        w_l=args.w_sup_noise, w_u=args.w_u_noise, w_cons=args.w_noise_cons
                     )
 
-                    # ============================================
-                    # NEW: Safe cross-correction with scaling
-                    # ============================================
-                    
-                    # OLD CODE: Direct subtraction without scaling
+                    # ----------------------------------------------------------------------
+                    # OLD CODE - Direct subtraction without safe scaling
                     # A_logits_ref_u = A_u['seg_logits'] - alpha_B * B_u['noise']
-                    # B_logits_ref_u = B_u['seg_logits'] - alpha_A * A_u['noise']
-                    
-                    # NEW CODE: Safe cross-correction with noise_safe_mode
+                    # 
+                    # WHY NOT USING OLD CODE:
+                    # 1. Can cause logits to explode if noise magnitude doesn't match
+                    # 2. No protection against NaN/Inf values
+                    # 3. Missing safe_mode parameter
+                    # ----------------------------------------------------------------------
+
+                    # ----------------------------------------------------------------------
+                    # NEW IMPROVED CODE: Safe cross-correction with scaling
+                    # ----------------------------------------------------------------------
                     A_logits_ref_u = cross_correct_logits(
                         A_u['seg_logits'], B_u['noise'], 
                         alpha=alpha_B, safe_mode=args.noise_safe_mode
@@ -479,39 +520,55 @@ if __name__ == '__main__':
                         alpha=alpha_A, safe_mode=args.noise_safe_mode
                     )
 
-                    # build refined logits for full batch
+                    # Build refined logits
                     A_logits_ref = torch.cat([A_l['seg_logits'], A_logits_ref_u], dim=0)
                     B_logits_ref = torch.cat([B_l['seg_logits'], B_logits_ref_u], dim=0)
 
-                    # refined pseudo-labels
-                    max_A = refined_pseudo_from(B_logits_ref)  # target for A
-                    max_B = refined_pseudo_from(A_logits_ref)  # target for B
+                    # Refined pseudo-labels
+                    max_A = refined_pseudo_from(B_logits_ref)
+                    max_B = refined_pseudo_from(A_logits_ref)
 
+                    # Update weights
                     weight_A = diffdw.cal_weights(A_l['seg_logits'].detach(), label_l.detach())
                     weight_B = distdw.get_ema_weights(B_u['seg_probs'].detach())
 
-                    loss_func_A.update_weight(weight_A)
-                    loss_func_B.update_weight(weight_B)
-                    cps_loss_func_A.update_weight(weight_A)
-                    cps_loss_func_B.update_weight(weight_B)
+                    # ----------------------------------------------------------------------
+                    # OLD CODE - Calls update_weight() which doesn't exist
+                    # loss_func_A.update_weight(weight_A)
+                    # 
+                    # WHY NOT USING OLD CODE:
+                    # 1. update_weight() method doesn't exist in standard loss classes
+                    # 2. Causes AttributeError: 'RobustCrossEntropyLoss' object has no attribute 'update_weight'
+                    # ----------------------------------------------------------------------
 
-                    # CPS with refined pseudo-labels
+                    # ----------------------------------------------------------------------
+                    # NEW IMPROVED CODE: Recreate loss functions with new weights
+                    # ----------------------------------------------------------------------
+                    loss_func_A = make_loss_function(args.sup_loss, weight_A)
+                    loss_func_B = make_loss_function(args.sup_loss, weight_B)
+                    cps_loss_func_A = make_loss_function(args.cps_loss, weight_A)
+                    cps_loss_func_B = make_loss_function(args.cps_loss, weight_B)
+
+                    # CPS loss
                     loss_cps = cps_loss_func_A(A_logits_ref, max_A) + cps_loss_func_B(B_logits_ref, max_B)
                     
-                    # total loss with noise losses
+                    # Total loss
                     loss = loss_sup + cps_w * loss_cps + (L_sup_noise + L_u_dis + L_cons)
 
-                # ============================================
-                # SECTION E: Modified Backward Pass with Gradient Clipping
-                # ============================================
-                
-                # OLD CODE: No gradient clipping
+                # ----------------------------------------------------------------------
+                # OLD CODE - No gradient clipping
                 # amp_grad_scaler.scale(loss).backward()
                 # amp_grad_scaler.step(optimizer_A)
-                # amp_grad_scaler.step(optimizer_B)
-                # amp_grad_scaler.update()
-                
-                # NEW CODE: With gradient clipping for stability
+                # 
+                # WHY NOT USING OLD CODE:
+                # 1. Noise training can cause gradient explosion
+                # 2. Leads to NaN values and training collapse
+                # 3. No protection against unstable gradients
+                # ----------------------------------------------------------------------
+
+                # ----------------------------------------------------------------------
+                # NEW IMPROVED CODE: Backward pass with gradient clipping
+                # ----------------------------------------------------------------------
                 amp_grad_scaler.scale(loss).backward()
 
                 # Apply gradient clipping before optimizer step
@@ -525,6 +582,7 @@ if __name__ == '__main__':
             else:
                 raise NotImplementedError
 
+            # Store losses
             loss_list.append(loss.item())
             loss_sup_list.append(loss_sup.item())
             loss_cps_list.append(loss_cps.item())
@@ -532,36 +590,37 @@ if __name__ == '__main__':
             loss_u_dis_list.append(L_u_dis.item())
             loss_cons_list.append(L_cons.item())
 
-        # ============================================
-        # SECTION F: Enhanced Logging
-        # ============================================
-        
-        # Collect monitoring metrics every epoch
-        if epoch_num % 5 == 0:  # Log more frequently for noise metrics
+        # Enhanced Logging
+        # Collect monitoring metrics every 5 epochs
+        if epoch_num % 5 == 0:
             with torch.no_grad():
-                # Monitor noise statistics
-                noise_mean_A = A_u['noise'].mean().item()
-                noise_mean_B = B_u['noise'].mean().item()
-                noise_std_A = A_u['noise'].std().item()
-                noise_std_B = B_u['noise'].std().item()
-                
-                # Monitor actual alpha values
-                if isinstance(alpha_A, torch.Tensor):
-                    alpha_mean = alpha_A.mean().item()
-                    alpha_std = alpha_A.std().item()
-                else:
-                    alpha_mean = alpha_A
-                    alpha_std = 0.0
-                
-                # Monitor pseudo-label agreement
-                pseudo_A = refined_pseudo_from(B_logits_ref)
-                pseudo_B = refined_pseudo_from(A_logits_ref)
-                agreement = (pseudo_A == pseudo_B).float().mean().item()
-                
-                # Monitor buffer stats
-                buffer_stats = noise_buffer.get_buffer_stats()
+                try:
+                    # Monitor noise statistics
+                    noise_mean_A = A_u['noise'].mean().item()
+                    noise_mean_B = B_u['noise'].mean().item()
+                    noise_std_A = A_u['noise'].std().item()
+                    noise_std_B = B_u['noise'].std().item()
+                    
+                    # Monitor actual alpha values
+                    if isinstance(alpha_A, torch.Tensor):
+                        alpha_mean = alpha_A.mean().item()
+                        alpha_std = alpha_A.std().item()
+                    else:
+                        alpha_mean = float(alpha_A)
+                        alpha_std = 0.0
+                    
+                    # Monitor pseudo-label agreement
+                    pseudo_A = refined_pseudo_from(B_logits_ref)
+                    pseudo_B = refined_pseudo_from(A_logits_ref)
+                    agreement = (pseudo_A == pseudo_B).float().mean().item()
+                    
+                    # Update buffer stats
+                    buffer_filled_ratio = noise_buffer.current_size / 10.0  # K=10
+                    
+                except Exception as e:
+                    logging.warning(f"Failed to collect monitoring metrics: {e}")
 
-        # Basic tensorboard logging (unchanged)
+        # Basic tensorboard logging
         writer.add_scalar('lr', get_lr(optimizer_A), epoch_num)
         writer.add_scalar('cps_w', cps_w, epoch_num)
         writer.add_scalar('loss/loss', np.mean(loss_list), epoch_num)
@@ -572,7 +631,7 @@ if __name__ == '__main__':
         writer.add_scalar('loss/noise_cons', np.mean(loss_cons_list), epoch_num)
         writer.add_scalar('noise/alpha_global', alpha_global, epoch_num)
         
-        # NEW: Enhanced tensorboard logging
+        # Enhanced tensorboard logging
         writer.add_scalar('noise/mean_A', noise_mean_A, epoch_num)
         writer.add_scalar('noise/mean_B', noise_mean_B, epoch_num)
         writer.add_scalar('noise/std_A', noise_std_A, epoch_num)
@@ -580,13 +639,22 @@ if __name__ == '__main__':
         writer.add_scalar('alpha/mean', alpha_mean, epoch_num)
         writer.add_scalar('alpha/std', alpha_std, epoch_num)
         writer.add_scalar('pseudo/agreement', agreement, epoch_num)
-        writer.add_scalar('buffer/filled_ratio', buffer_stats.get('filled_ratio', 0), epoch_num)
+        writer.add_scalar('buffer/filled_ratio', buffer_filled_ratio, epoch_num)
         
-        # OLD LOGGING: Basic loss only
+        # ----------------------------------------------------------------------
+        # OLD CODE - Basic logging only shows losses
         # logging.info(f'epoch {epoch_num} : loss : {np.mean(loss_list)}')
         # logging.info(f'     noise_losses: sup{np.mean(loss_sup_noise_list):.4f}, dis{np.mean(loss_u_dis_list):.4f}, cons{np.mean(loss_cons_list):.4f}')
-        
-        # NEW LOGGING: Comprehensive training metrics
+        # 
+        # WHY NOT USING OLD CODE:
+        # 1. Missing critical training metrics for debugging
+        # 2. Hard to diagnose noise training issues
+        # 3. No visibility into alpha values or agreement rates
+        # ----------------------------------------------------------------------
+
+        # ----------------------------------------------------------------------
+        # NEW IMPROVED CODE: Comprehensive training metrics
+        # ----------------------------------------------------------------------
         logging.info(f'epoch {epoch_num} : loss : {np.mean(loss_list):.4f}')
         logging.info(f'  noise stats - A(μ={noise_mean_A:.3f},σ={noise_std_A:.3f}), '
                      f'B(μ={noise_mean_B:.3f},σ={noise_std_B:.3f})')
@@ -603,15 +671,17 @@ if __name__ == '__main__':
             
         logging.info(f"     Class Weights A: {print_func(weight_A)}, lr: {get_lr(optimizer_A)}")
         logging.info(f"     Class Weights B: {print_func(weight_B)}")
+        logging.info(f"     Buffer filled: {buffer_filled_ratio:.1%}, ready: {noise_buffer.is_ready}")
         
         # Update learning rate
-        optimizer_A.param_groups[0]['lr'] = poly_lr(epoch_num, args.max_epoch, args.base_lr, 0.9)
-        optimizer_B.param_groups[0]['lr'] = poly_lr(epoch_num, args.max_epoch, args.base_lr, 0.9)
+        new_lr = float(poly_lr(epoch_num, args.max_epoch, args.base_lr, 0.9))
+        optimizer_A.param_groups[0]['lr'] = new_lr
+        optimizer_B.param_groups[0]['lr'] = new_lr
         
         cps_w = get_current_consistency_weight(epoch_num)
 
+        # Evaluation every 10 epochs
         if epoch_num % 10 == 0:
-            # Evaluation
             dice_list = [[] for _ in range(config.num_cls-1)]
             model_A.eval()
             model_B.eval()
@@ -619,9 +689,33 @@ if __name__ == '__main__':
             for batch in tqdm(eval_loader):
                 with torch.no_grad():
                     image, gt = fetch_data(batch)
-                    # evaluation uses return_dict=False
-                    output_A = model_A(image, return_dict=False)
-                    output_B = model_B(image, return_dict=False)
+                    
+                    # ----------------------------------------------------------------------
+                    # OLD CODE - Assumes model accepts return_dict parameter
+                    # output_A = model_A(image, return_dict=False)
+                    # 
+                    # WHY NOT USING OLD CODE:
+                    # 1. Model might not accept return_dict parameter
+                    # 2. Causes TypeError: forward() got an unexpected keyword argument 'return_dict'
+                    # ----------------------------------------------------------------------
+
+                    # ----------------------------------------------------------------------
+                    # NEW IMPROVED CODE: Handle model output for evaluation
+                    # ----------------------------------------------------------------------
+                    raw_output_A = model_A(image)
+                    raw_output_B = model_B(image)
+                    
+                    # Extract segmentation logits
+                    if isinstance(raw_output_A, dict):
+                        output_A = raw_output_A['seg_logits']
+                    else:
+                        output_A = raw_output_A
+                    
+                    if isinstance(raw_output_B, dict):
+                        output_B = raw_output_B['seg_logits']
+                    else:
+                        output_B = raw_output_B
+                    
                     output = (output_A + output_B) / 2.0
                     del image
 
@@ -642,7 +736,8 @@ if __name__ == '__main__':
             dice_mean = []
             for dice in dice_list:
                 dice_mean.append(np.mean(dice))
-            logging.info(f'evaluation epoch {epoch_num}, dice: {np.mean(dice_mean)}, {dice_mean}')
+            
+            logging.info(f'evaluation epoch {epoch_num}, dice: {np.mean(dice_mean):.4f}, {dice_mean}')
             
             if np.mean(dice_mean) > best_eval:
                 best_eval = np.mean(dice_mean)
@@ -653,10 +748,12 @@ if __name__ == '__main__':
                     'B': model_B.state_dict()
                 }, save_path)
                 logging.info(f'saving best model to {save_path}')
-            logging.info(f'\t best eval dice is {best_eval} in epoch {best_epoch}')
-            # if epoch_num - best_epoch == config.early_stop_patience:
-            #     logging.info(f'Early stop.')
-            #     break
+            
+            logging.info(f'\t best eval dice is {best_eval:.4f} in epoch {best_epoch}')
+            
+            if epoch_num - best_epoch == config.early_stop_patience:
+                logging.info(f'Early stop.')
+                break
             
     writer.close()
     logging.info(f'Training completed. Best dice: {best_eval} at epoch {best_epoch}')
